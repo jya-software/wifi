@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
@@ -13,8 +14,10 @@ import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
+import android.widget.Toast;
 
 import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 
 import java.net.Inet4Address;
 import java.net.InetAddress;
@@ -24,6 +27,12 @@ import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
@@ -74,6 +83,7 @@ WifiDelegate implements PluginRegistry.RequestPermissionsResultListener {
         this.result = result;
         this.methodCall = methodCall;
         this.permissionManager = permissionManager;
+        initBroadcastReceiver();
     }
 
     public void getSSID(MethodCall methodCall, MethodChannel.Result result) {
@@ -117,6 +127,30 @@ WifiDelegate implements PluginRegistry.RequestPermissionsResultListener {
             clearMethodCallAndResult();
         } else {
             finishWithError("unavailable", "wifi level not available.");
+        }
+    }
+
+    public void is5G(MethodCall methodCall, MethodChannel.Result result) {
+        if (!setPendingMethodCallAndResult(methodCall, result)) {
+            finishWithAlreadyActiveError();
+            return;
+        }
+          launch5G();
+    }
+    private  boolean is5GHz(int freq){
+        return freq > 4900 && freq < 5900;
+    }
+    public void launch5G(){
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+            int fre = wifiManager != null ? wifiManager.getConnectionInfo().getFrequency():-1;
+            if(fre!=-1){
+                result.success(is5GHz(fre));
+                  clearMethodCallAndResult();
+            }else{
+                finishWithError("WIFI_MANAGER_IS_NULL", "wifi manager is null");
+            }
+        }else{
+            finishWithError("SDK_LEVEL_TOO_LOW", "need Android sdk level 21");
         }
     }
 
@@ -169,16 +203,72 @@ WifiDelegate implements PluginRegistry.RequestPermissionsResultListener {
             finishWithAlreadyActiveError();
             return;
         }
-        if (!permissionManager.isPermissionGranted(Manifest.permission.ACCESS_FINE_LOCATION)) {
-            permissionManager.askForPermission(Manifest.permission.ACCESS_FINE_LOCATION, REQUEST_ACCESS_FINE_LOCATION_PERMISSION);
+        if (requestLocationPermission()) {
             return;
         }
         launchWifiList();
     }
 
-    private void launchWifiList() {
+    private class WifiBroadcastReceiver extends BroadcastReceiver {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            switch (action) {
+                case WifiManager.SCAN_RESULTS_AVAILABLE_ACTION:
+                    onReceiveScanResult();
+                    break;
+            }
+        }
+    }
+
+    WifiBroadcastReceiver broadcastReceiver;
+
+    private void initBroadcastReceiver() {
+        this.broadcastReceiver = new WifiBroadcastReceiver();
+        IntentFilter intentFilter = new IntentFilter();
+        intentFilter.addAction(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION);
+        activity.registerReceiver(broadcastReceiver, intentFilter);
+    }
+
+    public boolean requestLocationPermission() {
+        List<String> needRequest = new ArrayList<>();
+        String changeWifiState = Manifest.permission.CHANGE_WIFI_STATE;
+        String accessWifiState = Manifest.permission.ACCESS_WIFI_STATE;
+        String accessFineLocation = Manifest.permission.ACCESS_FINE_LOCATION;
+        String accessCoarseLocation = Manifest.permission.ACCESS_COARSE_LOCATION;
+
+        if (!permissionManager.isPermissionGranted(accessFineLocation)) {
+            needRequest.add(accessFineLocation);
+        }
+        if (!permissionManager.isPermissionGranted(changeWifiState)) {
+            needRequest.add(changeWifiState);
+        }
+        if (!permissionManager.isPermissionGranted(accessWifiState)) {
+            needRequest.add(accessWifiState);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {//如果 API level 是大于等于 23(Android 6.0) 时
+            //判断是否具有权限
+            if (!permissionManager.isPermissionGranted(accessCoarseLocation)) {
+                needRequest.add(accessCoarseLocation);
+                return false;
+            }
+        }
+        System.out.println("needRequest size:::" + needRequest.size());
+        if (needRequest.size() > 0) {
+            Toast.makeText(activity, "自Android 6.0开始需要打开位置权限才可以搜索到WIFI设备", Toast.LENGTH_SHORT).show();
+            ActivityCompat.requestPermissions(activity,
+                    needRequest.toArray(new String[]{}),
+                    REQUEST_ACCESS_FINE_LOCATION_PERMISSION);
+            return true;
+        }
+
+        return false;
+    }
+
+    private void onReceiveScanResult() {
+        if (methodCall == null) return;
         String key = methodCall.argument("key");
-        List<HashMap> list = new ArrayList<>();
+        final List<HashMap> list = new ArrayList<>();
         if (wifiManager != null) {
             List<ScanResult> scanResultList = wifiManager.getScanResults();
             for (ScanResult scanResult : scanResultList) {
@@ -193,21 +283,29 @@ WifiDelegate implements PluginRegistry.RequestPermissionsResultListener {
                     level = 0;
                 }
                 HashMap<String, Object> maps = new HashMap<>();
-                if (key.isEmpty()) {
+                if (key.isEmpty()||scanResult.SSID.contains(key)) {
+                    int freq = scanResult.frequency;
                     maps.put("ssid", scanResult.SSID);
                     maps.put("level", level);
+                    maps.put("5G", is5GHz(freq));
                     list.add(maps);
-                } else {
-                    if (scanResult.SSID.contains(key)) {
-                        maps.put("ssid", scanResult.SSID);
-                        maps.put("level", level);
-                        list.add(maps);
-                    }
                 }
             }
         }
-        result.success(list);
+        if (result != null) result.success(list);
         clearMethodCallAndResult();
+    }
+
+    private void launchWifiList() {
+        Timer timer = new Timer();
+        timer.schedule(new TimerTask() {
+            @Override
+            public void run() {
+                if (result != null) result.error("TIME_OUT", "scan wifi list time out", null);
+                clearMethodCallAndResult();
+            }
+        }, 5000);
+        wifiManager.startScan();
     }
 
     public void connection(MethodCall methodCall, MethodChannel.Result result) {
@@ -274,11 +372,9 @@ WifiDelegate implements PluginRegistry.RequestPermissionsResultListener {
 
     private WifiConfiguration isExist(WifiManager wifiManager, String ssid) {
         List<WifiConfiguration> existingConfigs = wifiManager.getConfiguredNetworks();
-        if(existingConfigs != null) {
-            for (WifiConfiguration existingConfig : existingConfigs) {
-                if (existingConfig.SSID.equals("\"" + ssid + "\"")) {
-                    return existingConfig;
-                }
+        for (WifiConfiguration existingConfig : existingConfigs) {
+            if (existingConfig.SSID.equals("\"" + ssid + "\"")) {
+                return existingConfig;
             }
         }
         return null;

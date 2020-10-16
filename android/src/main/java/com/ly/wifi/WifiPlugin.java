@@ -60,6 +60,9 @@ public class WifiPlugin implements MethodCallHandler {
             case "connection":
                 delegate.connection(call, result);
                 break;
+            case "is5G":
+                delegate.is5G(call, result);
+                break;
             default:
                 result.notImplemented();
                 break;
