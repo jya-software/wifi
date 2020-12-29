@@ -33,6 +33,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.logging.Handler;
 
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
@@ -46,6 +47,7 @@ WifiDelegate implements PluginRegistry.RequestPermissionsResultListener {
     private static final int REQUEST_ACCESS_FINE_LOCATION_PERMISSION = 1;
     private static final int REQUEST_CHANGE_WIFI_STATE_PERMISSION = 2;
     NetworkChangeReceiver networkReceiver;
+    private Timer timer;
 
     interface PermissionManager {
         boolean isPermissionGranted(String permissionName);
@@ -135,21 +137,23 @@ WifiDelegate implements PluginRegistry.RequestPermissionsResultListener {
             finishWithAlreadyActiveError();
             return;
         }
-          launch5G();
+        launch5G();
     }
-    private  boolean is5GHz(int freq){
+
+    private boolean is5GHz(int freq) {
         return freq > 4900 && freq < 5900;
     }
-    public void launch5G(){
+
+    public void launch5G() {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-            int fre = wifiManager != null ? wifiManager.getConnectionInfo().getFrequency():-1;
-            if(fre!=-1){
+            int fre = wifiManager != null ? wifiManager.getConnectionInfo().getFrequency() : -1;
+            if (fre != -1) {
                 result.success(is5GHz(fre));
-                  clearMethodCallAndResult();
-            }else{
+                clearMethodCallAndResult();
+            } else {
                 finishWithError("WIFI_MANAGER_IS_NULL", "wifi manager is null");
             }
-        }else{
+        } else {
             finishWithError("SDK_LEVEL_TOO_LOW", "need Android sdk level 21");
         }
     }
@@ -283,7 +287,7 @@ WifiDelegate implements PluginRegistry.RequestPermissionsResultListener {
                     level = 0;
                 }
                 HashMap<String, Object> maps = new HashMap<>();
-                if (key.isEmpty()||scanResult.SSID.contains(key)) {
+                if (key.isEmpty() || scanResult.SSID.contains(key)) {
                     int freq = scanResult.frequency;
                     maps.put("ssid", scanResult.SSID);
                     maps.put("level", level);
@@ -297,12 +301,19 @@ WifiDelegate implements PluginRegistry.RequestPermissionsResultListener {
     }
 
     private void launchWifiList() {
-        Timer timer = new Timer();
+        timer = new Timer();
         timer.schedule(new TimerTask() {
             @Override
             public void run() {
-                if (result != null) result.error("TIME_OUT", "scan wifi list time out", null);
-                clearMethodCallAndResult();
+                activity.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        System.out.println("launchWifiList time out");
+                        if (result != null)
+                            result.error("TIME_OUT", "scan wifi list time out", null);
+                        clearMethodCallAndResult();
+                    }
+                });
             }
         }, 5000);
         wifiManager.startScan();
@@ -382,7 +393,7 @@ WifiDelegate implements PluginRegistry.RequestPermissionsResultListener {
 
     private boolean setPendingMethodCallAndResult(MethodCall methodCall, MethodChannel.Result result) {
         if (this.result != null) {
-            return false;
+            finishWithError("REPLACED_BY_NEW_CALL", "Replaced by new call");
         }
         this.methodCall = methodCall;
         this.result = result;
@@ -424,6 +435,8 @@ WifiDelegate implements PluginRegistry.RequestPermissionsResultListener {
     private void clearMethodCallAndResult() {
         methodCall = null;
         result = null;
+        if (timer != null) timer.cancel();
+        timer = null;
     }
 
     // support Android O
